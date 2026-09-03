@@ -1,0 +1,74 @@
+name: batch
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: JSON array of query strings
+        required: true
+        type: string
+      engine:
+        description: browser engine (webkit | camoufox)
+        required: false
+        default: webkit
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: batch-${{ github.run_id }}
+jobs:
+  run:
+    # Camoufox's Firefox build segfaults on ubuntu-latest (24.04/noble, glibc
+    # 2.39); it launches cleanly on the older 22.04 image. WebKit stays on
+    # latest where the pump already runs it.
+    runs-on: ${{ inputs.engine == 'camoufox' && 'ubuntu-22.04' || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cache playwright browsers
+        if: inputs.engine != 'camoufox'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-webkit-${{ runner.os }}-1
+      - name: Cache camoufox browser
+        if: inputs.engine == 'camoufox'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/camoufox
+          key: camoufox-${{ runner.os }}-1
+      - run: npm install --no-audit --no-fund
+      - name: Install WebKit
+        if: inputs.engine != 'camoufox'
+        run: npx playwright install --with-deps webkit
+      - name: Install Camoufox
+        if: inputs.engine == 'camoufox'
+        # Camoufox is a Firefox fork; it needs Firefox's system libraries (via
+        # Playwright's deps) AND runs headful under Xvfb — true-headless
+        # segfaults on the Ubuntu runners (exit 139 on launch).
+        run: |
+          npx playwright install-deps firefox
+          sudo apt-get install -y xvfb
+          npx camoufox-js fetch
+      - name: Run (webkit)
+        if: inputs.engine != 'camoufox'
+        run: node runner.js
+        env:
+          QUERIES_JSON: ${{ inputs.queries }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          BROWSER: ${{ inputs.engine }}
+      - name: Run (camoufox)
+        if: inputs.engine == 'camoufox'
+        # headless:'virtual' in the runner starts its own Xvfb, so no wrapper.
+        run: node runner.js
+        env:
+          QUERIES_JSON: ${{ inputs.queries }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          BROWSER: ${{ inputs.engine }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.json
+          retention-days: 1
